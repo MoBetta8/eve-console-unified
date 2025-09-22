@@ -11,7 +11,7 @@ export default function App() {
     setLoading(true);
     setError("");
     const userMsg = { role: "user", content: input };
-    setHistory(h => [...h, userMsg]);
+    setHistory((h) => [...h, userMsg]);
     setInput("");
 
     try {
@@ -25,7 +25,7 @@ export default function App() {
         data?.choices?.[0]?.message?.content ??
         data?.error ??
         "No response";
-      setHistory(h => [...h, { role: "assistant", content: botText }]);
+      setHistory((h) => [...h, { role: "assistant", content: botText }]);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -48,24 +48,32 @@ export default function App() {
           Your AI-powered coding assistant (server key is hidden).
         </p>
 
-        <div style={{
-          border: "1px solid #333", borderRadius: 12, padding: 16, minHeight: 320,
-          display: "flex", flexDirection: "column", gap: 8
-        }}>
+        <div
+          style={{
+            border: "1px solid #333",
+            borderRadius: 12,
+            padding: 16,
+            minHeight: 320,
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+          }}
+        >
           <div style={{ flex: 1, overflowY: "auto", paddingRight: 4 }}>
             {history.length === 0 && (
               <div style={{ opacity: 0.6 }}>Say hello to EVE to get started.</div>
             )}
             {history.map((m, i) => (
-              <div key={i} style={{
-                background: m.role === "user" ? "#1e1e1e" : "#151515",
-                padding: "10px 12px",
-                borderRadius: 8,
-                margin: "8px 0"
-              }}>
-                <b style={{ opacity: 0.8 }}>
-                  {m.role === "user" ? "You" : "EVE"}
-                </b>
+              <div
+                key={i}
+                style={{
+                  background: m.role === "user" ? "#1e1e1e" : "#151515",
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  margin: "8px 0",
+                }}
+              >
+                <b style={{ opacity: 0.8 }}>{m.role === "user" ? "You" : "EVE"}</b>
                 <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>
               </div>
             ))}
@@ -76,22 +84,30 @@ export default function App() {
           <div style={{ display: "flex", gap: 8 }}>
             <textarea
               value={input}
-              onChange={e => setInput(e.target.value)}
+              onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKey}
               placeholder="Ask EVE…"
               style={{
-                flex: 1, minHeight: 48, resize: "vertical",
-                background: "#0f0f0f", color: "#fff",
-                border: "1px solid #333", borderRadius: 8, padding: 10
+                flex: 1,
+                minHeight: 48,
+                resize: "vertical",
+                background: "#0f0f0f",
+                color: "#fff",
+                border: "1px solid #333",
+                borderRadius: 8,
+                padding: 10,
               }}
             />
             <button
               onClick={send}
               disabled={loading}
               style={{
-                minWidth: 100, borderRadius: 8, border: "1px solid #333",
-                background: loading ? "#222" : "#1a73e8", color: "#fff",
-                cursor: loading ? "not-allowed" : "pointer"
+                minWidth: 100,
+                borderRadius: 8,
+                border: "1px solid #333",
+                background: loading ? "#222" : "#1a73e8",
+                color: "#fff",
+                cursor: loading ? "not-allowed" : "pointer",
               }}
             >
               {loading ? "Sending…" : "Send"}
