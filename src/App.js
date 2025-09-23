@@ -5,13 +5,16 @@ export default function App() {
   const [message, setMessage] = useState("");
   const [response, setResponse] = useState("");
 
-  console.log("🔍 Loaded App.js — Build test 0922");
+  console.log("🔍 LOADED FRESH APP.JS - BUILD 0922");
 
   useEffect(() => {
     const checkStatus = async () => {
       try {
+        console.log("🔍 Checking /api/env-check...");
         const res = await fetch("/api/env-check");
         const data = await res.json();
+        console.log("🔍 API response:", data);
+        
         if (res.ok && data.ok) {
           console.log("✅ Backend is online");
           setStatus("online");
@@ -24,6 +27,7 @@ export default function App() {
         setStatus("offline");
       }
     };
+
     checkStatus();
   }, []);
 
@@ -31,6 +35,7 @@ export default function App() {
     if (!message.trim()) return;
     setResponse("Sending...");
     try {
+      console.log("🔍 Sending message to /api/chat:", message);
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: {
@@ -39,20 +44,24 @@ export default function App() {
         body: JSON.stringify({ message }),
       });
       const data = await res.json();
+      console.log("🔍 Chat response:", data);
+      
       if (res.ok && data.reply) {
         setResponse(data.reply);
       } else {
         setResponse(data.error || "Something went wrong.");
       }
     } catch (err) {
+      console.error("❌ Chat error:", err);
       setResponse("Request failed.");
     }
   };
 
   return (
     <div style={{ color: "white", textAlign: "center", padding: "50px", fontFamily: "Arial", backgroundColor: "black", minHeight: "100vh" }}>
-      <h1>Welcome to Eve Console 🚀 (Build 0922)</h1>
+      <h1>Welcome to Eve Console 🚀 (FRESH BUILD 0922)</h1>
       <p>Status: {status === "online" ? "✅ Online" : "❌ Offline"}</p>
+      
       {status === "offline" ? (
         <div style={{ color: "red", marginTop: "20px" }}>
           EVE is offline — demo will queue once API is up
