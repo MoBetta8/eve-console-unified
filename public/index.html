@@ -1,116 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Eve Console</title>
-  <style>
-    body {
-      background-color: #000;
-      color: #fff;
-      font-family: Arial, sans-serif;
-      text-align: center;
-      padding: 2rem;
-    }
-  </style>
-</head>
-
-<body>
-  <h1>Welcome to Eve Console</h1>
-  <p>Your AI-powered coding assistant is ready!</p>
-
-  <!-- AgenticEve widget START -->
-  <script>
-    window.AGENTICEVE_API = window.AGENTICEVE_API || "http://localhost:8000";
-
-    (function(){
-      const API_BASE = window.AGENTICEVE_API;
-
-      const css = `
-        .ae-fab{position:fixed;right:18px;bottom:18px;background:#2563eb;color:#fff;
-          border-radius:999px;padding:12px 14px;border:0;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.35);z-index:10000}
-        .ae-panel{position:fixed;right:18px;bottom:78px;width:320px;background:#0d1117;color:#e6edf3;
-          border:1px solid #1f2937;border-radius:16px;display:none;flex-direction:column;height:420px;z-index:10000}
-        .ae-log{flex:1;overflow:auto;padding:12px}
-        .ae-row{display:flex;gap:8px;padding:12px;border-top:1px solid #1f2937}
-        .ae-inp{flex:1;background:#111827;color:#e6edf3;border:1px solid #334155;border-radius:10px;padding:10px}
-        .ae-btn{background:#2563eb;color:#fff;border:0;border-radius:10px;padding:10px 12px}
-        .ae-msg{margin:6px 0;padding:8px 10px;border-radius:10px}
-        .ae-user{background:#1f2937}
-        .ae-bot{background:#111827;border:1px solid #1f2937}
-      `;
-      const style = document.createElement('style');
-      style.textContent = css;
-      document.head.appendChild(style);
-
-      const panel = document.createElement('div');
-      panel.className = 'ae-panel';
-      panel.innerHTML = `
-        <div class="ae-log" id="ae-log"></div>
-        <div class="ae-row">
-          <input class="ae-inp" id="ae-inp" placeholder="Ask EVE Council…" />
-          <button class="ae-btn" id="ae-send">Send</button>
-        </div>`;
-      document.body.appendChild(panel);
-
-      const log = panel.querySelector('#ae-log');
-      const inp = panel.querySelector('#ae-inp');
-      const send = panel.querySelector('#ae-send');
-
-      const add = (who, text) => {
-        const d = document.createElement('div');
-        d.className = `ae-msg ${who}`;
-        d.textContent = text;
-        log.appendChild(d);
-        log.scrollTop = log.scrollHeight;
-      };
-
-      async function chat(q) {
-        add('ae-user', q);
-        add('ae-bot', '...');
-        try {
-          const r = await fetch(`${API_BASE}/chat/completions`, {
-            method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({messages:[{role:'user', content:q}]})
-          });
-          const j = await r.json();
-          const a = j?.choices?.[0]?.message?.content || '[no response]';
-          const bots = log.querySelectorAll('.ae-bot');
-          const last = bots[bots.length - 1];
-          last.textContent = a;
-        } catch(e) {
-          add('ae-bot', '[offline] API not reachable');
-        }
-      }
-
-      send.onclick = () => {
-        const q = inp.value.trim();
-        if (!q) return;
-        inp.value = '';
-        chat(q);
-      };
-
-      inp.addEventListener('keydown', e => {
-        if (e.key === 'Enter') send.click();
-      });
-
-      const fab = document.createElement('button');
-      fab.className = 'ae-fab';
-      fab.textContent = 'Chat with EVE';
-      fab.onclick = () => {
-        panel.style.display = (panel.style.display === 'flex' ? 'none' : 'flex');
-        if (panel.style.display === 'flex') inp.focus();
-      };
-      document.body.appendChild(fab);
-
-      // Health check
-      fetch(`${API_BASE}/healthz`)
-        .then(() => add('ae-bot','EVE is online. Ask me anything.'))
-        .catch(() => add('ae-bot','(EVE is offline — demo will queue once API is up)'));
-
-    })();
-  </script>
-  <!-- AgenticEve widget END -->
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Eve Console</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/index.js"></script>
+  </body>
 </html>
