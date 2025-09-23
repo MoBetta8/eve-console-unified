@@ -14,7 +14,7 @@ export default function App() {
     const checkStatus = async () => {
       logMessage("🔍 Checking /api/env-check...");
       try {
-        const res = await fetch("/api/env-check");
+        const res = await fetch("https://eve-console-unified-pftz.vercel.app/api/env-check");
         const data = await res.json();
         logMessage(`🔍 API response: ${JSON.stringify(data)}`);
         if (res.ok && data.ok) {
@@ -37,7 +37,7 @@ export default function App() {
     logMessage(`🔍 Sending to /api/chat: ${message}`);
     setResponse("Sending...");
     try {
-      const res = await fetch("/api/chat", {
+      const res = await fetch("https://eve-console-unified-pftz.vercel.app/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message }),
