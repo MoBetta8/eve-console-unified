@@ -5,6 +5,8 @@ export default function App() {
   const [message, setMessage] = useState("");
   const [response, setResponse] = useState("");
 
+  console.log("🔍 Loaded App.js — Build test 0922");
+
   useEffect(() => {
     const checkStatus = async () => {
       try {
@@ -22,13 +24,11 @@ export default function App() {
         setStatus("offline");
       }
     };
-
     checkStatus();
   }, []);
 
   const handleSend = async () => {
     if (!message.trim()) return;
-
     setResponse("Sending...");
     try {
       const res = await fetch("/api/chat", {
@@ -38,9 +38,7 @@ export default function App() {
         },
         body: JSON.stringify({ message }),
       });
-
       const data = await res.json();
-
       if (res.ok && data.reply) {
         setResponse(data.reply);
       } else {
@@ -53,9 +51,8 @@ export default function App() {
 
   return (
     <div style={{ color: "white", textAlign: "center", padding: "50px", fontFamily: "Arial", backgroundColor: "black", minHeight: "100vh" }}>
-      <h1>Welcome to Eve Console</h1>
+      <h1>Welcome to Eve Console 🚀 (Build 0922)</h1>
       <p>Status: {status === "online" ? "✅ Online" : "❌ Offline"}</p>
-
       {status === "offline" ? (
         <div style={{ color: "red", marginTop: "20px" }}>
           EVE is offline — demo will queue once API is up
