@@ -1,0 +1,2179 @@
+Skip to content
+Open sidebar
+You said:
+You are the Database Architecture Lead for Project Genesis.
+
+TASK: Add persistent storage to the Task Conductor and API Gateway systems.
+
+CURRENT STATE: System uses Redis for caching only. Need permanent storage for user data, task history, and agent performance.
+
+REQUIREMENTS:
+- PostgreSQL database schema for:
+  - Users (tiers, usage, billing)
+  - Tasks (history, status, results)
+  - Agent performance metrics
+  - Conversation memory (vector embeddings)
+- Vector database integration (ChromaDB or Weaviate) for Eve's memory
+- Database migrations and seeding
+- Connection pooling and async ORM (SQLAlchemy)
+
+INTEGRATION WITH EXISTING CODE:
+- Task Conductor: Store task execution history and results
+- API Gateway: User management, billing, rate limiting persistence
+- Eve Memory: Conversation context and user preferences
+
+SCHEMA REQUIREMENTS:
+sql
+-- Users table with tier management
+-- Tasks table with full execution history
+-- Agent_performance for optimization
+-- Conversations for Eve's memory
+-- User_preferences for personalization
+Code Copilot said:
+
+Stopped thinking
+You said:
+# Task Conductor - Core Pyramid Architecture Implementation
+# This is the foundation that makes complex AI orchestration manageable
+
+import asyncio
+import json
+import logging
+import time
+import uuid
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from typing import Dict, List, Optional, Any, Callable
+import httpx
+from pydantic import BaseModel
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Core Data Models
+class TaskStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running" 
+    COMPLETED = "completed"
+    FAILED = "failed"
+    DELEGATED = "delegated"
+    CANCELLED = "cancelled"
+
+class AgentType(str, Enum):
+    ORCHESTRATOR = "orchestrator"
+    MANAGER = "manager"
+    WORKER = "worker"
+
+@dataclass
+class TaskResult:
+    success: bool
+    data: Any = None
+    error: Optional[str] = None
+    confidence: float = 0.0
+    cost: float = 0.0
+    execution_time: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class Task:
+    id: str
+    description: str
+    type: str
+    priority: int = 1
+    max_cost: float = 10.0
+    timeout: int = 300  # seconds
+    context: Dict[str, Any] = field(default_factory=dict)
+    status: TaskStatus = TaskStatus.PENDING
+    created_at: datetime = field(default_factory=datetime.now)
+    assigned_to: Optional[str] = None
+    parent_task_id: Optional[str] = None
+    subtasks: List[str] = field(default_factory=list)
+
+# Base Agent Class
+class BaseAgent(ABC):
+    def __init__(self, agent_id: str, agent_type: AgentType, capabilities: List[str]):
+        self.id = agent_id
+        self.type = agent_type
+        self.capabilities = capabilities
+        self.status = "idle"
+        self.current_tasks: Dict[str, Task] = {}
+        self.performance_stats = {
+            "tasks_completed": 0,
+            "tasks_failed": 0,
+            "avg_execution_time": 0.0,
+            "total_cost": 0.0
+        }
+    
+    @abstractmethod
+    async def can_handle(self, task: Task) -> bool:
+        """Determine if this agent can handle the given task"""
+        pass
+    
+    @abstractmethod
+    async def execute(self, task: Task) -> TaskResult:
+        """Execute the assigned task"""
+        pass
+    
+    async def get_load(self) -> float:
+        """Return current load (0.0 = idle, 1.0 = at capacity)"""
+        return len(self.current_tasks) / self.max_concurrent_tasks
+    
+    def update_stats(self, result: TaskResult):
+        """Update agent performance statistics"""
+        if result.success:
+            self.performance_stats["tasks_completed"] += 1
+        else:
+            self.performance_stats["tasks_failed"] += 1
+        
+        # Update rolling average execution time
+        current_avg = self.performance_stats["avg_execution_time"]
+        total_tasks = self.performance_stats["tasks_completed"] + self.performance_stats["tasks_failed"]
+        self.performance_stats["avg_execution_time"] = (
+            (current_avg * (total_tasks - 1) + result.execution_time) / total_tasks
+        )
+        self.performance_stats["total_cost"] += result.cost
+
+# Worker Agents (Level 3 - Specialists)
+class WebScraperAgent(BaseAgent):
+    def __init__(self):
+        super().__init__(
+            agent_id="web_scraper_001",
+            agent_type=AgentType.WORKER,
+            capabilities=["web_scraping", "data_extraction", "url_processing"]
+        )
+        self.max_concurrent_tasks = 3
+    
+    async def can_handle(self, task: Task) -> bool:
+        return any(cap in task.type.lower() for cap in ["web", "scrape", "extract", "url"])
+    
+    async def execute(self, task: Task) -> TaskResult:
+        start_time = time.time()
+        self.current_tasks[task.id] = task
+        
+        try:
+            # Simulate web scraping
+            logger.info(f"WebScraper: Starting task {task.id}")
+            
+            async with httpx.AsyncClient() as client:
+                # This would be real web scraping logic
+                await asyncio.sleep(2)  # Simulate processing time
+                
+                # Mock successful extraction
+                extracted_data = {
+                    "title": "Sample Web Data",
+                    "content": "This is extracted content from the web",
+                    "url": task.context.get("url", "https://example.com"),
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                execution_time = time.time() - start_time
+                result = TaskResult(
+                    success=True,
+                    data=extracted_data,
+                    confidence=0.85,
+                    cost=0.05,
+                    execution_time=execution_time,
+                    metadata={"agent": self.id, "method": "web_scraping"}
+                )
+                
+                self.update_stats(result)
+                del self.current_tasks[task.id]
+                return result
+                
+        except Exception as e:
+            execution_time = time.time() - start_time
+            result = TaskResult(
+                success=False,
+                error=str(e),
+                confidence=0.0,
+                cost=0.01,
+                execution_time=execution_time,
+                metadata={"agent": self.id, "error_type": type(e).__name__}
+            )
+            self.update_stats(result)
+            del self.current_tasks[task.id]
+            return result
+
+class WriterAgent(BaseAgent):
+    def __init__(self):
+        super().__init__(
+            agent_id="writer_001",
+            agent_type=AgentType.WORKER,
+            capabilities=["content_writing", "blog_posts", "reports", "summaries"]
+        )
+        self.max_concurrent_tasks = 2
+    
+    async def can_handle(self, task: Task) -> bool:
+        return any(cap in task.type.lower() for cap in ["write", "content", "blog", "report", "summary"])
+    
+    async def execute(self, task: Task) -> TaskResult:
+        start_time = time.time()
+        self.current_tasks[task.id] = task
+        
+        try:
+            logger.info(f"Writer: Starting task {task.id}")
+            
+            # Simulate AI writing process
+            await asyncio.sleep(3)  # Simulate writing time
+            
+            # Mock content generation
+            generated_content = f"""
+            # Generated Content for: {task.description}
+            
+            This is a professionally written piece based on the task requirements.
+            The content has been structured for clarity and engagement.
+            
+            ## Key Points:
+            - Point 1: Relevant information
+            - Point 2: Supporting details
+            - Point 3: Conclusions
+            
+            Generated at: {datetime.now().isoformat()}
+            """
+            
+            execution_time = time.time() - start_time
+            result = TaskResult(
+                success=True,
+                data={"content": generated_content, "word_count": len(generated_content.split())},
+                confidence=0.90,
+                cost=0.15,
+                execution_time=execution_time,
+                metadata={"agent": self.id, "content_type": "generated_text"}
+            )
+            
+            self.update_stats(result)
+            del self.current_tasks[task.id]
+            return result
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            result = TaskResult(
+                success=False,
+                error=str(e),
+                confidence=0.0,
+                cost=0.02,
+                execution_time=execution_time,
+                metadata={"agent": self.id, "error_type": type(e).__name__}
+            )
+            self.update_stats(result)
+            del self.current_tasks[task.id]
+            return result
+
+class DataAnalystAgent(BaseAgent):
+    def __init__(self):
+        super().__init__(
+            agent_id="data_analyst_001",
+            agent_type=AgentType.WORKER,
+            capabilities=["data_analysis", "statistics", "visualization", "insights"]
+        )
+        self.max_concurrent_tasks = 2
+    
+    async def can_handle(self, task: Task) -> bool:
+        return any(cap in task.type.lower() for cap in ["analyze", "data", "statistics", "chart", "graph"])
+    
+    async def execute(self, task: Task) -> TaskResult:
+        start_time = time.time()
+        self.current_tasks[task.id] = task
+        
+        try:
+            logger.info(f"DataAnalyst: Starting task {task.id}")
+            
+            # Simulate data analysis
+            await asyncio.sleep(4)  # Simulate analysis time
+            
+            # Mock analysis results
+            analysis_results = {
+                "summary": "Data analysis completed successfully",
+                "key_metrics": {
+                    "total_records": 1500,
+                    "average_value": 42.7,
+                    "trend": "increasing",
+                    "confidence_interval": "95%"
+                },
+                "insights": [
+                    "Trend shows 15% growth over the period",
+                    "Seasonal patterns detected",
+                    "Outliers removed for accuracy"
+                ],
+                "visualizations": ["chart1.png", "graph2.png"]
+            }
+            
+            execution_time = time.time() - start_time
+            result = TaskResult(
+                success=True,
+                data=analysis_results,
+                confidence=0.88,
+                cost=0.25,
+                execution_time=execution_time,
+                metadata={"agent": self.id, "analysis_type": "statistical"}
+            )
+            
+            self.update_stats(result)
+            del self.current_tasks[task.id]
+            return result
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            result = TaskResult(
+                success=False,
+                error=str(e),
+                confidence=0.0,
+                cost=0.05,
+                execution_time=execution_time,
+                metadata={"agent": self.id, "error_type": type(e).__name__}
+            )
+            self.update_stats(result)
+            del self.current_tasks[task.id]
+            return result
+
+# Manager Agents (Level 2 - Domain Experts)
+class ResearchManager(BaseAgent):
+    def __init__(self):
+        super().__init__(
+            agent_id="research_manager_001",
+            agent_type=AgentType.MANAGER,
+            capabilities=["research_coordination", "data_gathering", "source_validation"]
+        )
+        self.max_concurrent_tasks = 5
+        self.worker_agents = [
+            WebScraperAgent(),
+            DataAnalystAgent()
+        ]
+    
+    async def can_handle(self, task: Task) -> bool:
+        return any(cap in task.type.lower() for cap in ["research", "data", "information", "analysis"])
+    
+    async def execute(self, task: Task) -> TaskResult:
+        start_time = time.time()
+        self.current_tasks[task.id] = task
+        
+        try:
+            logger.info(f"ResearchManager: Coordinating task {task.id}")
+            
+            # Break down research task into subtasks
+            subtasks = self.decompose_research_task(task)
+            results = []
+            
+            # Execute subtasks with appropriate workers
+            for subtask in subtasks:
+                worker = self.select_best_worker(subtask)
+                if worker:
+                    subtask_result = await worker.execute(subtask)
+                    results.append(subtask_result)
+                else:
+                    logger.warning(f"No available worker for subtask: {subtask.description}")
+            
+            # Synthesize results
+            final_result = self.synthesize_research_results(results)
+            
+            execution_time = time.time() - start_time
+            result = TaskResult(
+                success=len([r for r in results if r.success]) > 0,
+                data=final_result,
+                confidence=sum(r.confidence for r in results if r.success) / max(len(results), 1),
+                cost=sum(r.cost for r in results),
+                execution_time=execution_time,
+                metadata={
+                    "agent": self.id,
+                    "subtasks_completed": len([r for r in results if r.success]),
+                    "total_subtasks": len(results)
+                }
+            )
+            
+            self.update_stats(result)
+            del self.current_tasks[task.id]
+            return result
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            result = TaskResult(
+                success=False,
+                error=str(e),
+                confidence=0.0,
+                cost=0.1,
+                execution_time=execution_time,
+                metadata={"agent": self.id, "error_type": type(e).__name__}
+            )
+            self.update_stats(result)
+            del self.current_tasks[task.id]
+            return result
+    
+    def decompose_research_task(self, task: Task) -> List[Task]:
+        """Break research task into specialized subtasks"""
+        subtasks = []
+        
+        # Create web research subtask
+        web_task = Task(
+            id=f"{task.id}_web",
+            description=f"Web research for: {task.description}",
+            type="web_scraping",
+            context=task.context,
+            parent_task_id=task.id
+        )
+        subtasks.append(web_task)
+        
+        # Create data analysis subtask
+        analysis_task = Task(
+            id=f"{task.id}_analysis",
+            description=f"Analyze data for: {task.description}",
+            type="data_analysis",
+            context=task.context,
+            parent_task_id=task.id
+        )
+        subtasks.append(analysis_task)
+        
+        return subtasks
+    
+    def select_best_worker(self, subtask: Task) -> Optional[BaseAgent]:
+        """Select the most appropriate worker for a subtask"""
+        available_workers = [w for w in self.worker_agents if asyncio.run(w.can_handle(subtask))]
+        
+        if not available_workers:
+            return None
+        
+        # Select worker with lowest current load
+        return min(available_workers, key=lambda w: asyncio.run(w.get_load()))
+    
+    def synthesize_research_results(self, results: List[TaskResult]) -> Dict[str, Any]:
+        """Combine results from multiple research subtasks"""
+        successful_results = [r for r in results if r.success]
+        
+        if not successful_results:
+            return {"error": "No successful research results to synthesize"}
+        
+        synthesized = {
+            "research_summary": "Comprehensive research completed",
+            "data_sources": len(successful_results),
+            "findings": [],
+            "raw_data": []
+        }
+        
+        for result in successful_results:
+            if result.data:
+                synthesized["raw_data"].append(result.data)
+                if isinstance(result.data, dict):
+                    if "insights" in result.data:
+                        synthesized["findings"].extend(result.data["insights"])
+                    if "content" in result.data:
+                        synthesized["findings"].append(f"Source: {result.data.get('title', 'Unknown')}")
+        
+        return synthesized
+
+# Task Conductor (Level 1 - Chief Orchestrator)
+class TaskConductor(BaseAgent):
+    def __init__(self):
+        super().__init__(
+            agent_id="task_conductor_main",
+            agent_type=AgentType.ORCHESTRATOR,
+            capabilities=["task_orchestration", "multi_domain_coordination", "workflow_management"]
+        )
+        self.max_concurrent_tasks = 10
+        self.manager_agents = [
+            ResearchManager()
+        ]
+        # ContentManager would be added here when implemented
+    
+    async def can_handle(self, task: Task) -> bool:
+        """Task Conductor can handle any task by delegating"""
+        return True
+    
+    async def execute(self, task: Task) -> TaskResult:
+        start_time = time.time()
+        self.current_tasks[task.id] = task
+        
+        try:
+            logger.info(f"TaskConductor: Orchestrating complex task {task.id}")
+            
+            # Analyze task to determine required domains
+            required_domains = self.analyze_task_domains(task)
+            
+            # Find appropriate managers
+            selected_managers = []
+            for domain in required_domains:
+                manager = self.select_manager_for_domain(domain)
+                if manager:
+                    selected_managers.append((manager, domain))
+            
+            if not selected_managers:
+                raise Exception("No managers available for this task")
+            
+            # Execute with each manager
+            manager_results = []
+            for manager, domain in selected_managers:
+                domain_task = self.create_domain_specific_task(task, domain)
+                result = await manager.execute(domain_task)
+                manager_results.append((domain, result))
+            
+            # Orchestrate final result
+            final_result = self.orchestrate_final_result(task, manager_results)
+            
+            execution_time = time.time() - start_time
+            result = TaskResult(
+                success=any(result.success for _, result in manager_results),
+                data=final_result,
+                confidence=sum(r.confidence for _, r in manager_results if r.success) / max(len(manager_results), 1),
+                cost=sum(r.cost for _, r in manager_results),
+                execution_time=execution_time,
+                metadata={
+                    "agent": self.id,
+                    "managers_used": len(selected_managers),
+                    "domains": required_domains
+                }
+            )
+            
+            self.update_stats(result)
+            del self.current_tasks[task.id]
+            return result
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            result = TaskResult(
+                success=False,
+                error=str(e),
+                confidence=0.0,
+                cost=0.5,
+                execution_time=execution_time,
+                metadata={"agent": self.id, "error_type": type(e).__name__}
+            )
+            self.update_stats(result)
+            del self.current_tasks[task.id]
+            return result
+    
+    def analyze_task_domains(self, task: Task) -> List[str]:
+        """Determine which domains are needed for this task"""
+        description = task.description.lower()
+        domains = []
+        
+        # Simple keyword-based domain detection (would be ML-based in production)
+        if any(word in description for word in ["research", "find", "analyze", "data", "information"]):
+            domains.append("research")
+        if any(word in description for word in ["write", "create", "draft", "content", "blog"]):
+            domains.append("content")
+        if any(word in description for word in ["code", "program", "develop", "script"]):
+            domains.append("technical")
+        
+        return domains if domains else ["research"]  # Default to research
+    
+    def select_manager_for_domain(self, domain: str) -> Optional[BaseAgent]:
+        """Select the appropriate manager for a domain"""
+        domain_mapping = {
+            "research": ResearchManager,
+            # "content": ContentManager,  # Would be implemented
+            # "technical": TechnicalManager,  # Would be implemented
+        }
+        
+        manager_type = domain_mapping.get(domain)
+        if not manager_type:
+            return None
+        
+        # Find available manager of the right type
+        for manager in self.manager_agents:
+            if isinstance(manager, manager_type):
+                return manager
+        
+        return None
+    
+    def create_domain_specific_task(self, original_task: Task, domain: str) -> Task:
+        """Create a task tailored for a specific domain"""
+        return Task(
+            id=f"{original_task.id}_{domain}",
+            description=f"[{domain.upper()}] {original_task.description}",
+            type=f"{domain}_task",
+            context=original_task.context,
+            priority=original_task.priority,
+            max_cost=original_task.max_cost / 2,  # Split cost budget
+            parent_task_id=original_task.id
+        )
+    
+    def orchestrate_final_result(self, original_task: Task, manager_results: List[tuple]) -> Dict[str, Any]:
+        """Combine results from all managers into final output"""
+        successful_results = [(domain, result) for domain, result in manager_results if result.success]
+        
+        orchestrated_result = {
+            "task_id": original_task.id,
+            "description": original_task.description,
+            "completion_status": "success" if successful_results else "partial_failure",
+            "domains_completed": len(successful_results),
+            "total_domains": len(manager_results),
+            "results_by_domain": {},
+            "executive_summary": ""
+        }
+        
+        # Organize results by domain
+        for domain, result in successful_results:
+            orchestrated_result["results_by_domain"][domain] = result.data
+        
+        # Create executive summary
+        if successful_results:
+            orchestrated_result["executive_summary"] = f"Task completed successfully across {len(successful_results)} domains. "
+            for domain, result in successful_results:
+                if result.data and isinstance(result.data, dict):
+                    if "research_summary" in result.data:
+                        orchestrated_result["executive_summary"] += f"Research: {result.data['research_summary']}. "
+        
+        return orchestrated_result
+
+# Usage Example and Testing
+async def main():
+    """Test the Task Conductor system"""
+    conductor = TaskConductor()
+    
+    # Create a complex test task
+    test_task = Task(
+        id=str(uuid.uuid4()),
+        description="Research the current state of AI development and create a comprehensive report",
+        type="complex_research_task",
+        priority=1,
+        max_cost=5.0,
+        context={"domain": "artificial_intelligence", "depth": "comprehensive"}
+    )
+    
+    print(f"Starting task: {test_task.description}")
+    result = await conductor.execute(test_task)
+    
+    print(f"\nTask completed: {result.success}")
+    print(f"Execution time: {result.execution_time:.2f} seconds")
+    print(f"Total cost: ${result.cost:.2f}")
+    print(f"Confidence: {result.confidence:.2f}")
+    
+    if result.data:
+        print(f"\nExecutive Summary: {result.data.get('executive_summary', 'N/A')}")
+        print(f"Domains completed: {result.data.get('domains_completed', 0)}")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+Code Copilot said:
+
+Thought for 1m 9s
+TL;DR: Below is a drop-in persistence layer for Genesis: async SQLAlchemy + PostgreSQL (schema + Alembic migrations + seed), vector memory via ChromaDB (optional Weaviate), and a zero-touch instrumentation wrapper that persists your Task Conductor/Agents’ runs, results, usage, billing, and conversation memory. Minimal changes to your existing code: call wire_persistence(...) once.
+
+Plan (pseudocode)
+Config
+
+Read env: DATABASE_URL, pool sizes, CHROMA_PATH or WEAVIATE_URL, etc.
+
+DB Schema (PostgreSQL)
+
+users: id, email, name, tier, billing_status, limits, timestamps.
+
+api_keys: key hash, user fk, revoked, last_used.
+
+user_preferences: key/value JSON per user.
+
+user_usage_daily: aggregated usage & cost per day.
+
+rate_limit_buckets: rolling window counters.
+
+tasks: core task record + current status/result.
+
+task_runs: each execution attempt/run (agent, timing, cost, result).
+
+agent_performance_daily: per agent/day aggregates.
+
+conversations: Eve’s memory rows + vector_id (points into vector DB).
+
+Async SQLAlchemy
+
+async_engine (asyncpg), AsyncSession factory, healthy pool settings.
+
+Typed models + indexes (GIN on JSONB, helpful BTREEs).
+
+Migrations & Seeding
+
+Alembic env.py, initial migration creating all tables + indexes.
+
+seed.py: demo tiers, a user, API key, prefs.
+
+Vector Memory
+
+MemoryStore abstraction.
+
+Default ChromaDB client with collection per namespace (e.g., eve_memory).
+
+Optional Weaviate backend (switch via env).
+
+Methods: add_message(...) (stores in Postgres + upserts to vector DB), search_memory(...).
+
+Persistence Service
+
+Methods to persist tasks/runs, status updates, agent metrics, usage & rate limits, preferences, conversations.
+
+Zero-touch Integration
+
+wire_persistence(conductor, persistence, memory_store, user_id): monkey-patch execute(...) of Conductor & Agents to:
+
+upsert Task, insert TaskRun start/finish,
+
+persist result & error,
+
+update agent daily metrics,
+
+optionally persist conversation memory calls from context.
+
+No edits needed inside your provided classes.
+
+Example
+
+Wrap your existing main() to init persistence + memory and call wire_persistence(...).
+
+# =====================================================================
+# requirements.txt
+# =====================================================================
+# Core DB + async
+SQLAlchemy>=2.0
+asyncpg>=0.29
+alembic>=1.13
+pydantic>=2.7
+python-dotenv>=1.0
+cryptography>=42.0.0
+
+# Vector DB
+chromadb>=0.5
+weaviate-client>=4.6
+
+# Utilities
+bcrypt>=4.1
+
+# =====================================================================
+# config/settings.py
+# =====================================================================
+from __future__ import annotations
+import os
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Settings:
+    database_url: str = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/genesis")
+    pool_size: int = int(os.getenv("DB_POOL_SIZE", "10"))
+    max_overflow: int = int(os.getenv("DB_MAX_OVERFLOW", "20"))
+    pool_timeout: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+    echo_sql: bool = os.getenv("SQL_ECHO", "0") == "1"
+
+    # Vector memory
+    vector_backend: str = os.getenv("VECTOR_BACKEND", "chroma")  # "chroma" | "weaviate"
+    chroma_path: str = os.getenv("CHROMA_PATH", "./.chroma")
+    weaviate_url: str = os.getenv("WEAVIATE_URL", "")
+    weaviate_api_key: str = os.getenv("WEAVIATE_API_KEY", "")
+
+    # Security
+    api_key_salt: str = os.getenv("API_KEY_SALT", "change-me")
+
+settings = Settings()
+
+# =====================================================================
+# db/base.py
+# =====================================================================
+from __future__ import annotations
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy import MetaData
+
+class Base(DeclarativeBase):
+    metadata = MetaData(schema=None)  # single schema
+
+# =====================================================================
+# db/session.py
+# =====================================================================
+from __future__ import annotations
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.pool import QueuePool
+from config.settings import settings
+
+engine = create_async_engine(
+    settings.database_url,
+    echo=settings.echo_sql,
+    poolclass=QueuePool,
+    pool_size=settings.pool_size,
+    max_overflow=settings.max_overflow,
+    pool_timeout=settings.pool_timeout,
+)
+AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+async def get_session() -> AsyncSession:
+    return AsyncSessionLocal()
+
+# =====================================================================
+# db/models.py
+# =====================================================================
+from __future__ import annotations
+import uuid
+from datetime import datetime, date
+from typing import Optional, Dict, Any
+from sqlalchemy import (
+    String, Text, Enum, Integer, Float, Numeric, Boolean,
+    ForeignKey, UniqueConstraint, Index, Date, DateTime, JSON
+)
+from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from db.base import Base
+
+Tier = Enum("free", "pro", "enterprise", name="tier")
+BillingStatus = Enum("trialing", "active", "past_due", "canceled", name="billing_status")
+TaskStatus = Enum("pending", "running", "completed", "failed", "delegated", "cancelled", name="task_status")
+MsgRole = Enum("user", "assistant", "system", "tool", name="msg_role")
+
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)
+    name: Mapped[Optional[str]] = mapped_column(String(120))
+    tier: Mapped[str] = mapped_column(Tier, default="free", nullable=False)
+    billing_status: Mapped[str] = mapped_column(BillingStatus, default="trialing", nullable=False)
+    hard_limit_usd: Mapped[float] = mapped_column(Numeric(12, 4), default=5.00)
+    soft_limit_usd: Mapped[float] = mapped_column(Numeric(12, 4), default=5.00)
+    plan_renewal_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    usage_reset_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+class APIKey(Base):
+    __tablename__ = "api_keys"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    key_hash: Mapped[str] = mapped_column(String(96), nullable=False, unique=True)  # store hash, never plaintext
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+class UserPreference(Base):
+    __tablename__ = "user_preferences"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    key: Mapped[str] = mapped_column(String(100), nullable=False)
+    value: Mapped[Dict[str, Any]] = mapped_column(JSONB, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("user_id", "key", name="uq_user_pref"),)
+
+class UserUsageDaily(Base):
+    __tablename__ = "user_usage_daily"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    requests: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_in: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_out: Mapped[int] = mapped_column(Integer, default=0)
+    cost_usd: Mapped[float] = mapped_column(Numeric(12, 4), default=0)
+    __table_args__ = (UniqueConstraint("user_id", "day", name="uq_usage_day"),)
+
+class RateLimitBucket(Base):
+    __tablename__ = "rate_limit_buckets"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    __table_args__ = (UniqueConstraint("user_id", "window_start", name="uq_rate_window"),)
+
+class Task(Base):
+    __tablename__ = "tasks"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    type: Mapped[str] = mapped_column(String(64), nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, default=1)
+    max_cost: Mapped[float] = mapped_column(Numeric(12, 4), default=10.0)
+    timeout_sec: Mapped[int] = mapped_column(Integer, default=300)
+    context: Mapped[Dict[str, Any]] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(TaskStatus, default="pending", index=True)
+    assigned_to: Mapped[Optional[str]] = mapped_column(String(64))
+    parent_task_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"))
+    cost_usd: Mapped[float] = mapped_column(Numeric(12, 4), default=0)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    execution_time_sec: Mapped[float] = mapped_column(Float, default=0.0)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    result: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    __table_args__ = (
+        Index("ix_tasks_created_at", "created_at"),
+        Index("ix_tasks_context_gin", "context", postgresql_using="gin"),
+    )
+
+class TaskRun(Base):
+    __tablename__ = "task_runs"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    agent_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(TaskStatus, default="running", index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    cost_usd: Mapped[float] = mapped_column(Numeric(12, 4), default=0)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    execution_time_sec: Mapped[float] = mapped_column(Float, default=0.0)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    result: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
+
+class AgentPerformanceDaily(Base):
+    __tablename__ = "agent_performance_daily"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    agent_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    tasks_completed: Mapped[int] = mapped_column(Integer, default=0)
+    tasks_failed: Mapped[int] = mapped_column(Integer, default=0)
+    avg_execution_time_sec: Mapped[float] = mapped_column(Float, default=0.0)
+    total_cost_usd: Mapped[float] = mapped_column(Numeric(12, 4), default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("agent_id", "day", name="uq_agent_day"),)
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    turn_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(MsgRole, nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata: Mapped[Dict[str, Any]] = mapped_column(JSONB, default=dict)
+    vector_id: Mapped[Optional[str]] = mapped_column(String(128))  # id within vector DB
+    vector_namespace: Mapped[Optional[str]] = mapped_column(String(64), default="eve_memory")
+    message_hash: Mapped[Optional[str]] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("session_id", "turn_index", name="uq_session_turn"),)
+
+# =====================================================================
+# db/sql/schema.sql  (raw SQL reference; Alembic migration generates same)
+# =====================================================================
+# -- Provided for DBA visibility / manual bootstrap in psql if needed.
+# -- Create types, tables, indexes as per models.py (omitted here for brevity; use Alembic below).
+
+# =====================================================================
+# alembic.ini
+# =====================================================================
+[alembic]
+script_location = db/migrations
+sqlalchemy.url = %(here)s
+
+[loggers]
+keys = root,sqlalchemy,alembic
+
+[handlers]
+keys = console
+
+[formatters]
+keys = generic
+
+[logger_root]
+level = WARN
+handlers = console
+
+[logger_sqlalchemy]
+level = WARN
+handlers =
+qualname = sqlalchemy.engine
+
+[logger_alembic]
+level = INFO
+handlers =
+qualname = alembic
+
+[handler_console]
+class = StreamHandler
+args = (sys.stderr,)
+level = NOTSET
+formatter = generic
+
+[formatter_generic]
+format = %(levelname)-5.5s [%(name)s] %(message)s
+
+# =====================================================================
+# db/migrations/env.py
+# =====================================================================
+from __future__ import annotations
+import asyncio
+from logging.config import fileConfig
+from sqlalchemy import pool
+from sqlalchemy.engine import Connection
+from alembic import context
+from db.models import Base  # imports metadata
+from db.session import engine as async_engine
+
+config = context.config
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+target_metadata = Base.metadata
+
+def run_migrations_offline():
+    url = context.get_x_argument(as_dictionary=True).get("url")
+    if not url:
+        raise RuntimeError("Provide DB URL: `alembic -x url=postgresql+asyncpg://... upgrade head`")
+    context.configure(url=url, target_metadata=target_metadata, literal_binds=True, dialect_opts={"paramstyle":"named"})
+    with context.begin_transaction():
+        context.run_migrations()
+
+async def run_migrations_online():
+    connectable = async_engine
+    async with connectable.connect() as connection:
+        await connection.run_sync(lambda conn: context.configure(connection=conn, target_metadata=target_metadata))
+        await connection.run_sync(lambda conn: context.begin_transaction().__enter__())
+        try:
+            await connection.run_sync(lambda conn: context.run_migrations())
+        finally:
+            await connection.run_sync(lambda conn: context.begin_transaction().__exit__(None, None, None))
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    asyncio.run(run_migrations_online())
+
+# =====================================================================
+# db/migrations/versions/20250921_0001_initial.py
+# =====================================================================
+from __future__ import annotations
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
+
+revision = "20250921_0001"
+down_revision = None
+branch_labels = None
+depends_on = None
+
+def upgrade():
+    tier = sa.Enum("free","pro","enterprise", name="tier")
+    billing = sa.Enum("trialing","active","past_due","canceled", name="billing_status")
+    tstatus = sa.Enum("pending","running","completed","failed","delegated","cancelled", name="task_status")
+    mrole = sa.Enum("user","assistant","system","tool", name="msg_role")
+    op.create_type(tier); op.create_type(billing); op.create_type(tstatus); op.create_type(mrole)
+
+    op.create_table("users",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("email", sa.String(320), nullable=False, unique=True),
+        sa.Column("name", sa.String(120)),
+        sa.Column("tier", tier, nullable=False, server_default="free"),
+        sa.Column("billing_status", billing, nullable=False, server_default="trialing"),
+        sa.Column("hard_limit_usd", sa.Numeric(12,4), server_default="5.00"),
+        sa.Column("soft_limit_usd", sa.Numeric(12,4), server_default="5.00"),
+        sa.Column("plan_renewal_at", sa.DateTime(timezone=True)),
+        sa.Column("usage_reset_at", sa.DateTime(timezone=True)),
+        sa.Column("is_active", sa.Boolean, server_default=sa.text("true"), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()")),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"))
+    )
+    op.create_table("api_keys",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("key_hash", sa.String(96), nullable=False, unique=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()")),
+        sa.Column("revoked_at", sa.DateTime(timezone=True)),
+        sa.Column("last_used_at", sa.DateTime(timezone=True))
+    )
+    op.create_index("ix_api_keys_user", "api_keys", ["user_id"])
+
+    op.create_table("user_preferences",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("key", sa.String(100), nullable=False),
+        sa.Column("value", postgresql.JSONB, server_default=sa.text("'{}'::jsonb")),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()")),
+        sa.UniqueConstraint("user_id","key", name="uq_user_pref")
+    )
+    op.create_index("ix_prefs_user", "user_preferences", ["user_id"])
+
+    op.create_table("user_usage_daily",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("day", sa.Date, nullable=False),
+        sa.Column("requests", sa.Integer, server_default="0"),
+        sa.Column("tokens_in", sa.Integer, server_default="0"),
+        sa.Column("tokens_out", sa.Integer, server_default="0"),
+        sa.Column("cost_usd", sa.Numeric(12,4), server_default="0"),
+        sa.UniqueConstraint("user_id","day", name="uq_usage_day")
+    )
+    op.create_index("ix_usage_user", "user_usage_daily", ["user_id"])
+
+    op.create_table("rate_limit_buckets",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("window_start", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("limit", sa.Integer, nullable=False),
+        sa.Column("count", sa.Integer, server_default="0"),
+        sa.UniqueConstraint("user_id","window_start", name="uq_rate_window")
+    )
+    op.create_index("ix_rate_user", "rate_limit_buckets", ["user_id"])
+
+    op.create_table("tasks",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="SET NULL")),
+        sa.Column("description", sa.Text, nullable=False),
+        sa.Column("type", sa.String(64), nullable=False),
+        sa.Column("priority", sa.Integer, server_default="1"),
+        sa.Column("max_cost", sa.Numeric(12,4), server_default="10.0"),
+        sa.Column("timeout_sec", sa.Integer, server_default="300"),
+        sa.Column("context", postgresql.JSONB, server_default=sa.text("'{}'::jsonb")),
+        sa.Column("status", tstatus, index=True, server_default="pending"),
+        sa.Column("assigned_to", sa.String(64)),
+        sa.Column("parent_task_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tasks.id", ondelete="SET NULL")),
+        sa.Column("cost_usd", sa.Numeric(12,4), server_default="0"),
+        sa.Column("confidence", sa.Float, server_default="0"),
+        sa.Column("execution_time_sec", sa.Float, server_default="0"),
+        sa.Column("error", sa.Text),
+        sa.Column("result", postgresql.JSONB),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()")),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"))
+    )
+    op.create_index("ix_tasks_created_at", "tasks", ["created_at"])
+    op.create_index("ix_tasks_updated_at", "tasks", ["updated_at"])
+    op.execute("CREATE INDEX ix_tasks_context_gin ON tasks USING gin (context)")
+
+    op.create_table("task_runs",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("task_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("agent_id", sa.String(64), nullable=False),
+        sa.Column("status", tstatus, server_default="running"),
+        sa.Column("started_at", sa.DateTime(timezone=True), server_default=sa.text("now()")),
+        sa.Column("ended_at", sa.DateTime(timezone=True)),
+        sa.Column("cost_usd", sa.Numeric(12,4), server_default="0"),
+        sa.Column("confidence", sa.Float, server_default="0"),
+        sa.Column("execution_time_sec", sa.Float, server_default="0"),
+        sa.Column("error", sa.Text),
+        sa.Column("result", postgresql.JSONB)
+    )
+    op.create_index("ix_task_runs_task", "task_runs", ["task_id"])
+    op.create_index("ix_task_runs_agent", "task_runs", ["agent_id"])
+
+    op.create_table("agent_performance_daily",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("agent_id", sa.String(64), nullable=False),
+        sa.Column("day", sa.Date, nullable=False),
+        sa.Column("tasks_completed", sa.Integer, server_default="0"),
+        sa.Column("tasks_failed", sa.Integer, server_default="0"),
+        sa.Column("avg_execution_time_sec", sa.Float, server_default="0"),
+        sa.Column("total_cost_usd", sa.Numeric(12,4), server_default="0"),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()")),
+        sa.UniqueConstraint("agent_id","day", name="uq_agent_day")
+    )
+
+    op.create_table("conversations",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("session_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("turn_index", sa.Integer, nullable=False),
+        sa.Column("role", mrole, nullable=False),
+        sa.Column("message", sa.Text, nullable=False),
+        sa.Column("metadata", postgresql.JSONB, server_default=sa.text("'{}'::jsonb")),
+        sa.Column("vector_id", sa.String(128)),
+        sa.Column("vector_namespace", sa.String(64), server_default="eve_memory"),
+        sa.Column("message_hash", sa.String(64)),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()")),
+        sa.UniqueConstraint("session_id","turn_index", name="uq_session_turn")
+    )
+    op.create_index("ix_conv_user", "conversations", ["user_id"])
+    op.create_index("ix_conv_session", "conversations", ["session_id"])
+
+def downgrade():
+    op.drop_table("conversations")
+    op.drop_table("agent_performance_daily")
+    op.drop_index("ix_task_runs_agent", table_name="task_runs")
+    op.drop_index("ix_task_runs_task", table_name="task_runs")
+    op.drop_table("task_runs")
+    op.execute("DROP INDEX IF EXISTS ix_tasks_context_gin")
+    op.drop_index("ix_tasks_updated_at", table_name="tasks")
+    op.drop_index("ix_tasks_created_at", table_name="tasks")
+    op.drop_table("tasks")
+    op.drop_index("ix_rate_user", table_name="rate_limit_buckets")
+    op.drop_table("rate_limit_buckets")
+    op.drop_index("ix_usage_user", table_name="user_usage_daily")
+    op.drop_table("user_usage_daily")
+    op.drop_index("ix_prefs_user", table_name="user_preferences")
+    op.drop_table("user_preferences")
+    op.drop_index("ix_api_keys_user", table_name="api_keys")
+    op.drop_table("api_keys")
+    op.drop_table("users")
+    op.execute("DROP TYPE msg_role")
+    op.execute("DROP TYPE task_status")
+    op.execute("DROP TYPE billing_status")
+    op.execute("DROP TYPE tier")
+
+# =====================================================================
+# db/seed.py
+# =====================================================================
+from __future__ import annotations
+import uuid, bcrypt
+from datetime import date, datetime, timedelta
+from db.session import AsyncSessionLocal
+from db.models import User, APIKey, UserPreference
+
+async def seed():
+    async with AsyncSessionLocal() as s:
+        u = User(
+            email="demo@genesis.local",
+            name="Demo User",
+            tier="pro",
+            billing_status="active",
+            hard_limit_usd=50,
+            soft_limit_usd=50,
+            plan_renewal_at=datetime.utcnow() + timedelta(days=30)
+        )
+        s.add(u)
+        await s.flush()
+        # store key hash only
+        raw_key = "genesis_demo_key"
+        key_hash = bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode()
+        s.add(APIKey(user_id=u.id, key_hash=key_hash))
+        s.add(UserPreference(user_id=u.id, key="ui", value={"theme":"dark","dense":True}))
+        await s.commit()
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(seed())
+
+# =====================================================================
+# services/memory.py
+# =====================================================================
+from __future__ import annotations
+import hashlib
+import uuid
+from typing import Any, Dict, List, Optional, Protocol, Tuple
+from datetime import datetime
+from db.session import AsyncSessionLocal
+from db.models import Conversation
+from config.settings import settings
+
+class Embedder(Protocol):
+    def __call__(self, text: str) -> List[float]: ...
+
+class MemoryBackend(Protocol):
+    def upsert(self, namespace: str, docs: List[Tuple[str, str, Dict[str, Any]]], embeddings: Optional[List[List[float]]] = None) -> List[str]: ...
+    def query(self, namespace: str, query: str, top_k: int = 5, embedding: Optional[List[float]] = None, where: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]: ...
+
+# --- Chroma backend
+class ChromaBackend:
+    def __init__(self):
+        import chromadb
+        self.client = chromadb.PersistentClient(path=settings.chroma_path)
+        self.collections: Dict[str, Any] = {}
+
+    def _get(self, namespace: str):
+        if namespace not in self.collections:
+            self.collections[namespace] = self.client.get_or_create_collection(name=namespace)
+        return self.collections[namespace]
+
+    def upsert(self, namespace: str, docs: List[Tuple[str, str, Dict[str, Any]]], embeddings=None) -> List[str]:
+        col = self._get(namespace)
+        ids = [doc_id for doc_id, _, _ in docs]
+        texts = [text for _, text, _ in docs]
+        metas = [meta for _, _, meta in docs]
+        col.upsert(ids=ids, documents=texts, metadatas=metas, embeddings=embeddings)
+        return ids
+
+    def query(self, namespace: str, query: str, top_k: int = 5, embedding=None, where=None) -> List[Dict[str, Any]]:
+        col = self._get(namespace)
+        res = col.query(query_texts=[query], n_results=top_k, where=where, query_embeddings=[embedding] if embedding else None)
+        out = []
+        for i in range(len(res["ids"][0])):
+            out.append({
+                "id": res["ids"][0][i],
+                "text": res["documents"][0][i],
+                "metadata": res["metadatas"][0][i],
+                "distance": res["distances"][0][i] if "distances" in res else None
+            })
+        return out
+
+# --- Weaviate backend (optional)
+class WeaviateBackend:
+    def __init__(self):
+        import weaviate
+        auth = weaviate.AuthApiKey(api_key=settings.weaviate_api_key) if settings.weaviate_api_key else None
+        self.client = weaviate.connect_to_weaviate_cloud(cluster_url=settings.weaviate_url, auth_credentials=auth)
+
+    def upsert(self, namespace: str, docs: List[Tuple[str, str, Dict[str, Any]]], embeddings=None) -> List[str]:
+        # Simple class-per-namespace; assumes schema exists or auto-create
+        class_name = namespace.replace("-", "_")
+        with self.client.batch.dynamic() as batch:
+            ids = []
+            for doc_id, text, meta in docs:
+                batch.add_object(class_name=class_name, uuid=doc_id, properties={"text": text, **meta}, vector=embeddings.pop(0) if embeddings else None)
+                ids.append(doc_id)
+        return ids
+
+    def query(self, namespace: str, query: str, top_k: int = 5, embedding=None, where=None) -> List[Dict[str, Any]]:
+        class_name = namespace.replace("-", "_")
+        q = self.client.query.get(class_name, ["text"]).with_near_text({"concepts": [query]}).with_limit(top_k)
+        res = q.do()
+        # Transform (simplified)
+        return [{"id": str(i), "text": item["text"], "metadata": {}, "distance": None} for i, item in enumerate(res["data"]["Get"].get(class_name, []))]
+
+class MemoryStore:
+    """Persists Eve's conversation rows in Postgres and vectors in a vector DB."""
+    def __init__(self, embedder: Optional[Embedder] = None, namespace: str = "eve_memory"):
+        self.embedder = embedder
+        self.namespace = namespace
+        self.backend: MemoryBackend = ChromaBackend() if settings.vector_backend == "chroma" else WeaviateBackend()
+
+    async def add_message(self, user_id: uuid.UUID, session_id: uuid.UUID, role: str, message: str, metadata: Optional[Dict[str, Any]] = None) -> Conversation:
+        metadata = metadata or {}
+        # deterministic id for dedupe if needed
+        msg_hash = hashlib.sha256(message.encode("utf-8")).hexdigest()
+        conv = Conversation(
+            user_id=user_id, session_id=session_id, role=role, turn_index=metadata.get("turn_index", 0),
+            message=message, metadata=metadata, vector_namespace=self.namespace, message_hash=msg_hash
+        )
+        emb = self.embedder(message) if self.embedder else None
+        vid = str(uuid.uuid4())
+        self.backend.upsert(self.namespace, [(vid, message, {"user_id": str(user_id), "session_id": str(session_id), **metadata})], embeddings=[emb] if emb else None)
+        conv.vector_id = vid
+        async with AsyncSessionLocal() as s:
+            s.add(conv)
+            await s.commit()
+            await s.refresh(conv)
+        return conv
+
+    async def search_memory(self, query: str, top_k: int = 5, where: Optional[Dict[str, Any]] = None):
+        emb = self.embedder(query) if self.embedder else None
+        return self.backend.query(self.namespace, query=query, top_k=top_k, embedding=emb, where=where)
+
+# =====================================================================
+# services/persistence.py
+# =====================================================================
+from __future__ import annotations
+import uuid
+from datetime import datetime, date
+from typing import Any, Dict, Optional
+from sqlalchemy import select, update, func
+from sqlalchemy.dialects.postgresql import insert
+from db.session import AsyncSessionLocal
+from db.models import Task, TaskRun, AgentPerformanceDaily, UserUsageDaily, RateLimitBucket, UserPreference, User
+
+class PersistenceService:
+    """Transactional persistence for tasks, runs, metrics, usage, and prefs."""
+    async def upsert_task(self, task_id: uuid.UUID, payload: Dict[str, Any]) -> Task:
+        async with AsyncSessionLocal() as s:
+            stmt = insert(Task).values(id=task_id, **payload).on_conflict_do_update(
+                index_elements=[Task.id], set_={**{k:v for k,v in payload.items()}, "updated_at": func.now()}
+            ).returning(Task)
+            res = await s.execute(stmt)
+            await s.commit()
+            return res.scalar_one()
+
+    async def set_task_status(self, task_id: uuid.UUID, status: str, **fields) -> None:
+        async with AsyncSessionLocal() as s:
+            await s.execute(update(Task).where(Task.id==task_id).values(status=status, updated_at=func.now(), **fields))
+            await s.commit()
+
+    async def start_run(self, task_id: uuid.UUID, agent_id: str) -> uuid.UUID:
+        run_id = uuid.uuid4()
+        async with AsyncSessionLocal() as s:
+            s.add(TaskRun(id=run_id, task_id=task_id, agent_id=agent_id, status="running", started_at=datetime.utcnow()))
+            await s.commit()
+        return run_id
+
+    async def finish_run(self, run_id: uuid.UUID, status: str, result: Optional[Dict[str, Any]], error: Optional[str], confidence: float, cost: float, execution_time: float) -> None:
+        async with AsyncSessionLocal() as s:
+            await s.execute(update(TaskRun).where(TaskRun.id==run_id).values(
+                status=status, ended_at=datetime.utcnow(), result=result, error=error,
+                confidence=confidence, cost_usd=cost, execution_time_sec=execution_time
+            ))
+            await s.commit()
+
+    async def rollup_agent_daily(self, agent_id: str, success: bool, execution_time: float, cost: float) -> None:
+        today = date.today()
+        async with AsyncSessionLocal() as s:
+            stmt = insert(AgentPerformanceDaily).values(
+                agent_id=agent_id, day=today,
+                tasks_completed=1 if success else 0, tasks_failed=0 if success else 1,
+                avg_execution_time_sec=execution_time, total_cost_usd=cost
+            ).on_conflict_do_update(
+                index_elements=[AgentPerformanceDaily.agent_id, AgentPerformanceDaily.day],
+                set_={
+                    "tasks_completed": AgentPerformanceDaily.tasks_completed + (1 if success else 0),
+                    "tasks_failed": AgentPerformanceDaily.tasks_failed + (0 if success else 1),
+                    "total_cost_usd": AgentPerformanceDaily.total_cost_usd + cost,
+                    # incremental avg
+                    "avg_execution_time_sec": (AgentPerformanceDaily.avg_execution_time_sec * 0.9) + (execution_time * 0.1),
+                    "updated_at": func.now()
+                }
+            )
+            await s.execute(stmt); await s.commit()
+
+    async def add_usage(self, user_id: uuid.UUID, requests: int = 1, tokens_in: int = 0, tokens_out: int = 0, cost_usd: float = 0.0) -> None:
+        d = date.today()
+        async with AsyncSessionLocal() as s:
+            stmt = insert(UserUsageDaily).values(
+                user_id=user_id, day=d, requests=requests, tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost_usd
+            ).on_conflict_do_update(
+                index_elements=[UserUsageDaily.user_id, UserUsageDaily.day],
+                set_={
+                    "requests": UserUsageDaily.requests + requests,
+                    "tokens_in": UserUsageDaily.tokens_in + tokens_in,
+                    "tokens_out": UserUsageDaily.tokens_out + tokens_out,
+                    "cost_usd": UserUsageDaily.cost_usd + cost_usd
+                }
+            )
+            await s.execute(stmt); await s.commit()
+
+    async def increment_rate_limit(self, user_id: uuid.UUID, window_start: datetime, limit: int) -> int:
+        async with AsyncSessionLocal() as s:
+            stmt = insert(RateLimitBucket).values(
+                user_id=user_id, window_start=window_start, limit=limit, count=1
+            ).on_conflict_do_update(
+                index_elements=[RateLimitBucket.user_id, RateLimitBucket.window_start],
+                set_={"count": RateLimitBucket.count + 1, "limit": limit}
+            ).returning(RateLimitBucket.count)
+            res = await s.execute(stmt); await s.commit()
+            return res.scalar_one()
+
+    async def set_user_pref(self, user_id: uuid.UUID, key: str, value: Dict[str, Any]) -> None:
+        async with AsyncSessionLocal() as s:
+            stmt = insert(UserPreference).values(user_id=user_id, key=key, value=value).on_conflict_do_update(
+                constraint="uq_user_pref", set_={"value": value, "updated_at": func.now()}
+            )
+            await s.execute(stmt); await s.commit()
+
+# =====================================================================
+# api_gateway/persistence_integration.py
+# =====================================================================
+from __future__ import annotations
+import uuid
+from datetime import datetime, timedelta
+from services.persistence import PersistenceService
+
+class RateLimiter:
+    """Fixed window limiter persisted in DB. Why: enforce per-tier quotas reliably across processes."""
+    def __init__(self, persistence: PersistenceService, window_seconds: int = 60):
+        self.p = persistence
+        self.win = window_seconds
+
+    async def check_and_increment(self, user_id: uuid.UUID, limit: int) -> bool:
+        now = datetime.utcnow()
+        window_start = now.replace(second=0, microsecond=0) + timedelta(seconds=(now.second // self.win) * self.win - now.second)
+        count = await self.p.increment_rate_limit(user_id, window_start, limit)
+        return count <= limit
+
+# =====================================================================
+# task_system/wire.py
+# =====================================================================
+from __future__ import annotations
+import asyncio, time, uuid as _uuid
+from typing import Any, Dict, Callable, Awaitable, Optional
+from services.persistence import PersistenceService
+from services.memory import MemoryStore
+
+def wire_persistence(conductor: Any, persistence: PersistenceService, memory: Optional[MemoryStore] = None, user_id: Optional[_uuid.UUID] = None):
+    """Monkey-patch execute() of Conductor & Agents. Why: integrate without invasive edits."""
+    async def wrap_execute(obj, orig_execute: Callable[[Any], Awaitable[Any]]):
+        async def _wrapped(task):
+            # Ensure Task upserted
+            await persistence.upsert_task(_uuid.UUID(task.id) if isinstance(task.id, str) else task.id, {
+                "user_id": user_id, "description": task.description, "type": task.type,
+                "priority": task.priority, "max_cost": task.max_cost, "timeout_sec": task.timeout,
+                "context": task.context, "status": "running", "assigned_to": getattr(obj, "id", None),
+                "parent_task_id": _uuid.UUID(task.parent_task_id) if isinstance(task.parent_task_id, str) else task.parent_task_id
+            })
+            run_id = await persistence.start_run(_uuid.UUID(task.id), getattr(obj, "id", "unknown"))
+            started = time.time()
+            try:
+                result = await orig_execute(task)
+                await persistence.finish_run(
+                    run_id=run_id,
+                    status="completed" if result.success else "failed",
+                    result=result.data if result.success else None,
+                    error=None if result.success else (result.error or "unknown"),
+                    confidence=result.confidence, cost=result.cost, execution_time=result.execution_time
+                )
+                await persistence.set_task_status(
+                    _uuid.UUID(task.id), "completed" if result.success else "failed",
+                    result=result.data if result.success else None, error=result.error, confidence=result.confidence,
+                    cost_usd=result.cost, execution_time_sec=result.execution_time
+                )
+                await persistence.rollup_agent_daily(getattr(obj, "id", "unknown"), result.success, result.execution_time, result.cost)
+                return result
+            except Exception as e:
+                elapsed = time.time() - started
+                await persistence.finish_run(run_id, status="failed", result=None, error=str(e), confidence=0.0, cost=0.0, execution_time=elapsed)
+                await persistence.set_task_status(_uuid.UUID(task.id), "failed", error=str(e), execution_time_sec=elapsed)
+                await persistence.rollup_agent_daily(getattr(obj, "id", "unknown"), False, elapsed, 0.0)
+                raise
+        return _wrapped
+
+    # Patch conductor
+    conductor.execute = asyncio.coroutine(wrap_execute(conductor, conductor.execute))
+    # Discover and patch all nested agents recursively
+    seen = set()
+    def _walk(agent):
+        if id(agent) in seen: return
+        seen.add(id(agent))
+        if hasattr(agent, "worker_agents"):
+            for w in agent.worker_agents:
+                w.execute = asyncio.coroutine(wrap_execute(w, w.execute))
+                _walk(w)
+        if hasattr(agent, "manager_agents"):
+            for m in agent.manager_agents:
+                m.execute = asyncio.coroutine(wrap_execute(m, m.execute))
+                _walk(m)
+    _walk(conductor)
+    return conductor
+
+# =====================================================================
+# examples/run_with_persistence.py
+# =====================================================================
+from __future__ import annotations
+import asyncio, uuid
+from services.persistence import PersistenceService
+from services.memory import MemoryStore
+# Import your provided TaskConductor & Task from the prompt’s module context
+# Here assumed available as task_conductor_module
+# from task_conductor_module import TaskConductor, Task
+
+# For this self-contained example, we re-declare minimal TaskConductor/Task signature types:
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from typing import Dict, Optional, Any, List
+
+class TaskStatusX(str, Enum):
+    PENDING="pending"; RUNNING="running"; COMPLETED="completed"; FAILED="failed"; DELEGATED="delegated"; CANCELLED="cancelled"
+
+@dataclass
+class TaskX:
+    id: str; description: str; type: str; priority: int=1; max_cost: float=10.0; timeout: int=300
+    context: Dict[str, Any]=field(default_factory=dict)
+    status: TaskStatusX=TaskStatusX.PENDING; created_at: datetime=field(default_factory=datetime.utcnow)
+    assigned_to: Optional[str]=None; parent_task_id: Optional[str]=None; subtasks: List[str]=field(default_factory=list)
+
+async def main_demo(conductor, original_task_class):
+    persistence = PersistenceService()
+    memory = MemoryStore(embedder=None)
+    user_id = uuid.uuid4()  # supply real user id from Users
+    from task_system.wire import wire_persistence
+    wire_persistence(conductor, persistence, memory, user_id)
+
+    # Build a task and run through your existing conductor
+    task = original_task_class(
+        id=str(uuid.uuid4()),
+        description="Research the current state of AI development and create a comprehensive report",
+        type="complex_research_task",
+        priority=1,
+        max_cost=5.0,
+        context={"domain": "artificial_intelligence", "depth": "comprehensive"}
+    )
+    res = await conductor.execute(task)
+    print("Persisted:", res.success, res.cost, res.confidence)
+
+# =====================================================================
+# Makefile (helper)
+# =====================================================================
+# Usage:
+#   make migrate url=postgresql+asyncpg://postgres:postgres@localhost:5432/genesis
+#   make seed
+migrate:
+\talembic -x url=$(url) upgrade head
+seed:
+\tpython -m db.seed
+
+# =====================================================================
+# README_persistence.md (brief)
+# =====================================================================
+# 1) Set env:
+#    export DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/genesis
+#    export VECTOR_BACKEND=chroma   # or weaviate
+#    export CHROMA_PATH=./.chroma
+#
+# 2) Install deps: `pip install -r requirements.txt`
+#
+# 3) Run migrations:
+#    alembic -x url=$DATABASE_URL upgrade head
+#
+# 4) Seed:
+#    python -m db.seed
+#
+# 5) Integrate:
+#    from services.persistence import PersistenceService
+#    from services.memory import MemoryStore
+#    from task_system.wire import wire_persistence
+#    p = PersistenceService(); m = MemoryStore()
+#    wire_persistence(conductor, p, m, user_id=<uuid from Users>)
+#
+# 6) API Gateway:
+#    Use api_gateway/RateLimiter.check_and_increment(...) when gating requests.
+a. Want me to patch your provided file directly (apply wire_persistence to your TaskConductor/agents) and add unit tests?
+b. Should I add a pgvector path (hybrid: store vectors in Postgres) or keep Chroma/Weaviate only?
+
+You said:
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DesignerGPT – AI UI/UX System</title>
+    <meta name="description" content="DesignerGPT - AI-powered UI/UX system for responsive, semantic website generation." />
+    <meta property="og:title" content="DesignerGPT – AI UI/UX System" />
+    <meta property="og:description" content="Design once, deploy everywhere with AI-driven interfaces." />
+    <meta property="og:image" content="https://source.unsplash.com/featured/?design,technology" />
+    <meta property="og:type" content="website" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@1/css/pico.min.css" />
+  </head>
+  <body>
+    <nav class="container-fluid">
+      <ul>
+        <li><strong>DesignerGPT</strong></li>
+      </ul>
+      <ul>
+        <li><a href="#">Home</a></li>
+        <li><a href="#features">Features</a></li>
+        <li><a href="#subscribe" role="button">Try Now</a></li>
+      </ul>
+    </nav>
+
+    <main class="container">
+      <div class="grid">
+        <section>
+          <hgroup>
+            <h2>AI-Driven UI/UX System</h2>
+            <h3>Design once, deploy everywhere</h3>
+          </hgroup>
+          <p>
+            DesignerGPT empowers AI agents to generate clean, responsive websites using semantic HTML and beautiful defaults. Optimized for performance, modularity, and human readability.
+          </p>
+          <p><a href="#subscribe" role="button" class="contrast">Get Started</a></p>
+          
+          <figure>
+            <img src="https://source.unsplash.com/featured/?design,technology" alt="UI System Overview" />
+            <figcaption><a href="https://unsplash.com" target="_blank">Image via Unsplash</a></figcaption>
+          </figure>
+        </section>
+      </div>
+    </main>
+
+    <!-- Features Grid -->
+    <section id="features" class="container">
+      <h2>Key Features</h2>
+      <div class="grid">
+        <article>
+          <h4>Responsive Layouts</h4>
+          <p>Automatically adapts to any device and screen size.</p>
+        </article>
+        <article>
+          <h4>Semantic HTML</h4>
+          <p>Readable, accessible, and SEO-friendly structures.</p>
+        </article>
+        <article>
+          <h4>AI-Orchestrated</h4>
+          <p>Reflects Conductor → Manager → Worker architecture visually.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- Layered Design Section -->
+    <section class="container">
+      <h2>Layered AI Agent Design</h2>
+      <p>
+        Architected for layered execution: <strong>Conductor → Manager → Worker</strong>. DesignerGPT provides interfaces that reflect this mental model visually and interactively.
+      </p>
+    </section>
+
+    <!-- Subscribe -->
+    <section id="subscribe" aria-label="Subscribe example">
+      <div class="container">
+        <article>
+          <hgroup>
+            <h2>Stay Updated</h2>
+            <h3>Receive updates on the DesignerGPT system evolution</h3>
+          </hgroup>
+          <form class="grid">
+            <input type="text" id="firstname" name="firstname" placeholder="Your name" aria-label="First name" required />
+            <input type="email" id="email" name="email" placeholder="Your email" aria-label="Email address" required />
+            <button type="submit" onclick="event.preventDefault()">Subscribe</button>
+          </form>
+        </article>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="container">
+      <p>&copy; 2025 DesignerGPT. All rights reserved.</p>
+      <small><a href="#">Privacy</a> • <a href="#">Terms</a></small>
+    </footer>
+  </body>
+</html>
+You said:
+This is from Designer and WebsiteAI. That's their parts. Now you add your part.
+Code Copilot said:
+TL;DR: I added an interactive AI Orchestration Playground to your page: live Conductor→Manager→Worker simulator, SVG architecture map, real-time logs, progress, and JSON export—no external JS deps.
+
+Plan (pseudocode)
+Extend navbar with “Playground”.
+
+Add #playground section:
+
+Task input, “Run Orchestration”, “Reset”, “Export JSON”.
+
+Cards for Conductor, Manager(s), Worker(s) with live status.
+
+SVG diagram (Conductor→Manager→Workers).
+
+Log console (aria-live) + Results panel.
+
+JS simulator:
+
+sleep(ms), log(msg), setStatus(node, state).
+
+analyzeDomains(description) → ["research", "content" if keywords].
+
+For each domain: simulate Manager; for research, run WebScraper + DataAnalyst; for content, run Writer.
+
+Aggregate TaskResult-like JSON with cost/confidence/timing.
+
+Update progress, nodes, logs; enable export.
+
+Minimal CSS utilities for status colors; keep Pico for layout.
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DesignerGPT – AI UI/UX System</title>
+    <meta name="description" content="DesignerGPT - AI-powered UI/UX system for responsive, semantic website generation." />
+    <meta property="og:title" content="DesignerGPT – AI UI/UX System" />
+    <meta property="og:description" content="Design once, deploy everywhere with AI-driven interfaces." />
+    <meta property="og:image" content="https://source.unsplash.com/featured/?design,technology" />
+    <meta property="og:type" content="website" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@1/css/pico.min.css" />
+    <style>
+      /* Why: subtle status cues without extra libs */
+      .status-dot{width:.8rem;height:.8rem;border-radius:50%;display:inline-block;vertical-align:middle;margin-right:.4rem;box-shadow:0 0 0 2px rgba(0,0,0,.05) inset}
+      .idle{background:#cbd5e1}.running{background:#facc15}.ok{background:#22c55e}.err{background:#ef4444}
+      .node-card{transition:transform .15s ease}
+      .node-card[data-state="running"]{transform:translateY(-2px)}
+      .log{max-height:280px;overflow:auto;background:var(--muted-border-color);padding:1rem;border-radius:12px}
+      .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace}
+      .muted{opacity:.8}
+      .progress-wrap{display:flex;align-items:center;gap:.75rem}
+      .chip{border:1px solid var(--muted-border-color);border-radius:999px;padding:.15rem .6rem;font-size:.8rem}
+      svg#arch{width:100%;height:auto}
+      .nowrap{white-space:nowrap}
+    </style>
+  </head>
+  <body>
+    <nav class="container-fluid">
+      <ul>
+        <li><strong>DesignerGPT</strong></li>
+      </ul>
+      <ul>
+        <li><a href="#">Home</a></li>
+        <li><a href="#features">Features</a></li>
+        <li><a href="#playground">Playground</a></li>
+        <li><a href="#subscribe" role="button">Try Now</a></li>
+      </ul>
+    </nav>
+
+    <main class="container">
+      <div class="grid">
+        <section>
+          <hgroup>
+            <h2>AI-Driven UI/UX System</h2>
+            <h3>Design once, deploy everywhere</h3>
+          </hgroup>
+          <p>
+            DesignerGPT empowers AI agents to generate clean, responsive websites using semantic HTML and beautiful defaults. Optimized for performance, modularity, and human readability.
+          </p>
+          <p><a href="#subscribe" role="button" class="contrast">Get Started</a></p>
+
+          <figure>
+            <img src="https://source.unsplash.com/featured/?design,technology" alt="UI System Overview" />
+            <figcaption><a href="https://unsplash.com" target="_blank" rel="noopener">Image via Unsplash</a></figcaption>
+          </figure>
+        </section>
+      </div>
+    </main>
+
+    <!-- Features Grid -->
+    <section id="features" class="container">
+      <h2>Key Features</h2>
+      <div class="grid">
+        <article>
+          <h4>Responsive Layouts</h4>
+          <p>Automatically adapts to any device and screen size.</p>
+        </article>
+        <article>
+          <h4>Semantic HTML</h4>
+          <p>Readable, accessible, and SEO-friendly structures.</p>
+        </article>
+        <article>
+          <h4>AI-Orchestrated</h4>
+          <p>Reflects Conductor → Manager → Worker architecture visually.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- Layered Design Section -->
+    <section class="container">
+      <h2>Layered AI Agent Design</h2>
+      <p>
+        Architected for layered execution: <strong>Conductor → Manager → Worker</strong>. DesignerGPT provides interfaces that reflect this mental model visually and interactively.
+      </p>
+    </section>
+
+    <!-- ===== Code Copilot: Orchestration Playground ===== -->
+    <section id="playground" class="container">
+      <h2>AI Orchestration Playground</h2>
+      <p class="muted">Simulate Conductor → Manager → Worker execution. Watch live status, logs, and export a TaskResult JSON.</p>
+
+      <article>
+        <div class="grid">
+          <div>
+            <form id="orchestrate-form">
+              <label for="taskDesc">Task description</label>
+              <textarea id="taskDesc" name="taskDesc" rows="4" placeholder="e.g., Research current state of AI development and produce a concise report."></textarea>
+
+              <div class="grid">
+                <div>
+                  <label for="budget">Max cost ($)</label>
+                  <input id="budget" name="budget" type="number" min="0.1" step="0.1" value="5.0" />
+                </div>
+                <div>
+                  <label for="timeout">Timeout (s)</label>
+                  <input id="timeout" name="timeout" type="number" min="10" step="5" value="60" />
+                </div>
+                <div>
+                  <label for="seed">Seed</label>
+                  <input id="seed" name="seed" type="number" step="1" value="42" />
+                </div>
+              </div>
+
+              <div class="progress-wrap">
+                <progress id="progress" value="0" max="100" style="flex:1"></progress>
+                <span id="progressLabel" class="chip">0%</span>
+              </div>
+
+              <div class="grid" style="margin-top:.5rem">
+                <button id="runBtn" type="submit">Run Orchestration</button>
+                <button id="resetBtn" class="secondary" type="button">Reset</button>
+                <button id="exportBtn" class="contrast outline" type="button" disabled>Export JSON</button>
+              </div>
+            </form>
+          </div>
+
+          <div>
+            <details open>
+              <summary>Architecture</summary>
+              <svg id="arch" viewBox="0 0 900 300" role="img" aria-label="Conductor to Manager to Workers diagram">
+                <defs>
+                  <marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+                    <path d="M0,0 L0,6 L9,3 z"></path>
+                  </marker>
+                </defs>
+                <g fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)">
+                  <rect x="40" y="40" width="200" height="60" rx="12" fill="var(--card-background-color)"></rect>
+                  <text x="140" y="75" text-anchor="middle">Conductor</text>
+
+                  <rect x="360" y="20" width="200" height="60" rx="12" fill="var(--card-background-color)"></rect>
+                  <text x="460" y="55" text-anchor="middle">Research Manager</text>
+
+                  <rect x="360" y="120" width="200" height="60" rx="12" fill="var(--card-background-color)"></rect>
+                  <text x="460" y="155" text-anchor="middle">Content Manager</text>
+
+                  <rect x="680" y="10" width="200" height="60" rx="12" fill="var(--card-background-color)"></rect>
+                  <text x="780" y="45" text-anchor="middle">WebScraper</text>
+
+                  <rect x="680" y="90" width="200" height="60" rx="12" fill="var(--card-background-color)"></rect>
+                  <text x="780" y="125" text-anchor="middle">DataAnalyst</text>
+
+                  <rect x="680" y="170" width="200" height="60" rx="12" fill="var(--card-background-color)"></rect>
+                  <text x="780" y="205" text-anchor="middle">Writer</text>
+
+                  <line x1="240" y1="70" x2="360" y2="50"></line>
+                  <line x1="240" y1="70" x2="360" y2="150"></line>
+
+                  <line x1="560" y1="50" x2="680" y2="40"></line>
+                  <line x1="560" y1="50" x2="680" y2="130"></line>
+
+                  <line x1="560" y1="150" x2="680" y2="200"></line>
+                </g>
+              </svg>
+              <small class="muted">Managers and Workers spin up based on detected domains.</small>
+            </details>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:1rem">
+          <div>
+            <h4 class="nowrap">Live Status</h4>
+            <div class="grid">
+              <article id="node-conductor" class="node-card" data-state="idle">
+                <header><span class="status-dot idle"></span>Conductor</header>
+                <small class="muted">task_conductor_main</small>
+              </article>
+              <article id="node-res-mgr" class="node-card" data-state="idle">
+                <header><span class="status-dot idle"></span>Research Manager</header>
+                <small class="muted">research_manager_001</small>
+              </article>
+              <article id="node-content-mgr" class="node-card" data-state="idle">
+                <header><span class="status-dot idle"></span>Content Manager</header>
+                <small class="muted">content_manager_001</small>
+              </article>
+              <article id="node-web" class="node-card" data-state="idle">
+                <header><span class="status-dot idle"></span>WebScraper</header>
+                <small class="muted">web_scraper_001</small>
+              </article>
+              <article id="node-analyst" class="node-card" data-state="idle">
+                <header><span class="status-dot idle"></span>DataAnalyst</header>
+                <small class="muted">data_analyst_001</small>
+              </article>
+              <article id="node-writer" class="node-card" data-state="idle">
+                <header><span class="status-dot idle"></span>Writer</header>
+                <small class="muted">writer_001</small>
+              </article>
+            </div>
+          </div>
+
+          <div>
+            <h4>Logs</h4>
+            <div id="log" class="log mono" aria-live="polite" aria-atomic="false"></div>
+          </div>
+        </div>
+
+        <div style="margin-top:1rem">
+          <details id="resultsBox">
+            <summary>Results JSON</summary>
+            <pre id="results" class="mono" style="white-space:pre-wrap"></pre>
+          </details>
+        </div>
+      </article>
+    </section>
+    <!-- ===== End Playground ===== -->
+
+    <!-- Subscribe -->
+    <section id="subscribe" aria-label="Subscribe example">
+      <div class="container">
+        <article>
+          <hgroup>
+            <h2>Stay Updated</h2>
+            <h3>Receive updates on the DesignerGPT system evolution</h3>
+          </hgroup>
+          <form class="grid">
+            <input type="text" id="firstname" name="firstname" placeholder="Your name" aria-label="First name" required />
+            <input type="email" id="email" name="email" placeholder="Your email" aria-label="Email address" required />
+            <button type="submit" onclick="event.preventDefault()">Subscribe</button>
+          </form>
+        </article>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="container">
+      <p>&copy; 2025 DesignerGPT. All rights reserved.</p>
+      <small><a href="#">Privacy</a> • <a href="#">Terms</a></small>
+    </footer>
+
+    <script>
+      // ===== Utilities =====
+      const $ = (s, r = document) => r.querySelector(s);
+      const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+      const sleep = ms => new Promise(res => setTimeout(res, ms));
+
+      function log(msg) {
+        const el = $("#log");
+        const ts = new Date().toLocaleTimeString();
+        el.insertAdjacentHTML("beforeend", `<div>[${ts}] ${msg}</div>`);
+        el.scrollTop = el.scrollHeight;
+      }
+
+      function setStatus(nodeId, state) {
+        const card = $(nodeId);
+        const dot = card.querySelector(".status-dot");
+        card.dataset.state = state;
+        dot.className = "status-dot " + (state === "idle" ? "idle" : state === "running" ? "running" : state === "ok" ? "ok" : "err");
+      }
+
+      function setProgress(pct) {
+        $("#progress").value = pct;
+        $("#progressLabel").textContent = `${pct}%`;
+      }
+
+      function rand(seed) {
+        // LCG; Why: deterministic simulation tied to "seed"
+        let s = seed % 2147483647; if (s <= 0) s += 2147483646;
+        return () => (s = s * 16807 % 2147483647) / 2147483647;
+      }
+
+      function analyzeDomains(text) {
+        const t = (text || "").toLowerCase();
+        const domains = [];
+        if (/(research|find|analy[sz]e|data|information)/.test(t)) domains.push("research");
+        if (/(write|create|draft|content|blog|report|summary)/.test(t)) domains.push("content");
+        return domains.length ? domains : ["research"];
+      }
+
+      // ===== Simulation =====
+      async function runOrchestration({ description, maxCost, timeoutSec, seed }) {
+        const rnd = rand(seed);
+        const id = crypto.randomUUID();
+        const started = performance.now();
+        const domains = analyzeDomains(description);
+        const resultsByDomain = {};
+        let totalCost = 0;
+        let successes = 0;
+
+        // Reset nodes
+        ["#node-conductor","#node-res-mgr","#node-content-mgr","#node-web","#node-analyst","#node-writer"].forEach(sel => setStatus(sel, "idle"));
+        setProgress(0);
+        $("#results").textContent = "";
+        $("#exportBtn").disabled = true;
+        $("#resultsBox").open = false;
+
+        setStatus("#node-conductor","running");
+        log(`Conductor started task ${id}`);
+        await sleep(300 + rnd()*300);
+
+        const stepsPerDomain = 3;
+        const totalSteps = domains.length * stepsPerDomain + 2;
+        let step = 1;
+
+        for (const domain of domains) {
+          const mgrNode = domain === "research" ? "#node-res-mgr" : "#node-content-mgr";
+          setStatus(mgrNode,"running");
+          log(`Manager (${domain}) planning subtasks…`);
+          await sleep(300 + rnd()*400);
+          setProgress(Math.min(100, Math.round(++step/totalSteps*100)));
+
+          if (domain === "research") {
+            // WebScraper
+            setStatus("#node-web","running");
+            log("WebScraper: fetching sources…");
+            await sleep(600 + rnd()*600);
+            const webOk = rnd() > 0.05;
+            setStatus("#node-web", webOk ? "ok" : "err");
+            log(webOk ? "WebScraper: extracted 3 sources" : "WebScraper: failed on rate limit");
+            setProgress(Math.min(100, Math.round(++step/totalSteps*100)));
+
+            // DataAnalyst
+            setStatus("#node-analyst","running");
+            log("DataAnalyst: analyzing dataset…");
+            await sleep(800 + rnd()*700);
+            const analystOk = rnd() > 0.1;
+            setStatus("#node-analyst", analystOk ? "ok" : "err");
+            log(analystOk ? "DataAnalyst: trends ↑ with 95% CI" : "DataAnalyst: insufficient data");
+            setProgress(Math.min(100, Math.round(++step/totalSteps*100)));
+
+            const conf = +(0.75 + rnd()*0.2 - (analystOk?0:0.2)).toFixed(2);
+            const cost = +(0.25 + rnd()*0.25).toFixed(2);
+            totalCost += cost;
+
+            resultsByDomain[domain] = {
+              research_summary: analystOk ? "Comprehensive research completed" : "Partial research available",
+              data_sources: webOk ? 3 : 0,
+              findings: analystOk ? ["Trend shows growth", "Seasonality detected"] : [],
+              raw_data: [{ source: "example.com", ok: webOk }],
+              confidence: Math.max(0, conf),
+              cost
+            };
+            if (webOk || analystOk) successes++;
+          } else if (domain === "content") {
+            // Writer
+            setStatus("#node-writer","running");
+            log("Writer: drafting content…");
+            await sleep(900 + rnd()*800);
+            const ok = rnd() > 0.08;
+            setStatus("#node-writer", ok ? "ok" : "err");
+            setProgress(Math.min(100, Math.round((step+=2)/totalSteps*100)));
+            const body = ok
+              ? `# Generated Content for: ${description}\n\n- Point 1\n- Point 2\n- Point 3\n\nGenerated at: ${new Date().toISOString()}`
+              : "(draft failed)";
+            const conf = +(0.78 + rnd()*0.15 - (ok?0:0.3)).toFixed(2);
+            const cost = +(0.15 + rnd()*0.2).toFixed(2);
+            totalCost += cost;
+
+            resultsByDomain[domain] = {
+              content: body,
+              word_count: body.split(/\s+/).length,
+              confidence: Math.max(0, conf),
+              cost
+            };
+            if (ok) successes++;
+          }
+
+          setStatus(mgrNode, "ok");
+          log(`Manager (${domain}) completed.`);
+        }
+
+        const ended = performance.now();
+        const execution_time = +((ended - started)/1000).toFixed(2);
+        const success = successes > 0;
+        const confidence = +(Object.values(resultsByDomain).reduce((a,v)=>a+(v.confidence||0),0) / Math.max(1, Object.keys(resultsByDomain).length)).toFixed(2);
+
+        setStatus("#node-conductor", success ? "ok" : "err");
+        setProgress(100);
+        log(`Conductor finalized. Success=${success}.`);
+
+        const finalResult = {
+          success,
+          data: {
+            task_id: id,
+            description,
+            completion_status: success ? "success" : "partial_failure",
+            domains_completed: successes,
+            total_domains: domains.length,
+            results_by_domain: resultsByDomain,
+            executive_summary: success
+              ? `Task completed across ${successes}/${domains.length} domain(s).`
+              : `Task partially completed (${successes}/${domains.length}).`
+          },
+          confidence,
+          cost: +totalCost.toFixed(2),
+          execution_time
+        };
+
+        $("#results").textContent = JSON.stringify(finalResult, null, 2);
+        $("#resultsBox").open = true;
+        $("#exportBtn").disabled = false;
+        return finalResult;
+      }
+
+      // ===== Wire UI =====
+      (function init() {
+        const form = $("#orchestrate-form");
+        const runBtn = $("#runBtn");
+        const resetBtn = $("#resetBtn");
+        const exportBtn = $("#exportBtn");
+        let lastResult = null;
+
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          runBtn.disabled = true;
+          $("#log").innerHTML = "";
+          try {
+            const description = $("#taskDesc").value.trim() || "Research the current state of AI development and create a comprehensive report";
+            const maxCost = parseFloat($("#budget").value) || 5.0;
+            const timeoutSec = parseInt($("#timeout").value, 10) || 60;
+            const seed = parseInt($("#seed").value, 10) || 42;
+            lastResult = await runOrchestration({ description, maxCost, timeoutSec, seed });
+          } finally {
+            runBtn.disabled = false;
+          }
+        });
+
+        resetBtn.addEventListener("click", () => {
+          $("#log").innerHTML = "";
+          $("#results").textContent = "";
+          $("#resultsBox").open = false;
+          ["#node-conductor","#node-res-mgr","#node-content-mgr","#node-web","#node-analyst","#node-writer"].forEach(sel => setStatus(sel, "idle"));
+          setProgress(0);
+          exportBtn.disabled = true;
+          lastResult = null;
+        });
+
+        exportBtn.addEventListener("click", () => {
+          const data = $("#results").textContent.trim();
+          if (!data) return;
+          const blob = new Blob([data], { type: "application/json" });
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = "orchestration_result.json";
+          a.click();
+          URL.revokeObjectURL(a.href);
+        });
+      })();
+    </script>
+  </body>
+</html>
+a. Want a React version (Tailwind + shadcn) with persisted runs and a mini timeline?
+b. Add a JSON→Python code block that generates a runnable Task for your backend from the exported result?
+
+
+
+No file chosenNo file chosen
+ChatGPT can make mistakes. Check important info.
