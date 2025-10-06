@@ -6,10 +6,13 @@ import subprocess
 
 
 # === CONFIG ===
-OPENROUTER_API_KEY = "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"  # Replace this with your actual API key
-VOICE_MODEL = "C:\\piper_voices\\en_amy\\en_US-amy-medium.onnx"
-VOICE_CONFIG = "C:\\piper_voices\\en_amy\\en_US-amy-medium.onnx.json"
-OUTPUT_FILE = "C:\\piper_voices\\en_amy\\response.wav"
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+if not OPENROUTER_API_KEY:
+    raise ValueError("OPENROUTER_API_KEY environment variable is not set. Please set it in your .env file.")
+
+VOICE_MODEL = os.getenv("VOICE_MODEL", "C:\\piper_voices\\en_amy\\en_US-amy-medium.onnx")
+VOICE_CONFIG = os.getenv("VOICE_CONFIG", "C:\\piper_voices\\en_amy\\en_US-amy-medium.onnx.json")
+OUTPUT_FILE = os.getenv("OUTPUT_FILE", "C:\\piper_voices\\en_amy\\response.wav")
 
 # === ASK GPT ===
 def ask_gpt(prompt):
