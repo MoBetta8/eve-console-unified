@@ -10,6 +10,21 @@ export default function App() {
     setLogs((prev) => [...prev, `${new Date().toLocaleTimeString()}: ${msg}`]);
   };
 
+  // Detect deployment platform
+  const getDeploymentInfo = () => {
+    const hostname = window.location.hostname;
+    if (hostname.includes('netlify')) {
+      return { platform: 'Netlify', color: '#00C7B7' };
+    } else if (hostname.includes('vercel')) {
+      return { platform: 'Vercel', color: '#000000' };
+    } else if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      return { platform: 'Local Development', color: '#888888' };
+    }
+    return { platform: 'Unknown', color: '#666666' };
+  };
+
+  const deploymentInfo = getDeploymentInfo();
+
   useEffect(() => {
     const checkStatus = async () => {
       logMessage("🔍 Checking /api/env-check...");
@@ -58,6 +73,26 @@ export default function App() {
   return (
     <div style={{ color: "white", textAlign: "center", padding: "50px", fontFamily: "Arial", backgroundColor: "black", minHeight: "100vh" }}>
       <h1>Welcome to Eve Console 🚀 (FRESH BUILD 0923)</h1>
+      
+      {/* Deployment Information */}
+      <div style={{ 
+        backgroundColor: "#1a1a1a", 
+        padding: "15px", 
+        borderRadius: "8px", 
+        margin: "20px auto", 
+        maxWidth: "600px",
+        border: `2px solid ${deploymentInfo.color}`
+      }}>
+        <h3 style={{ margin: "0 0 10px 0", color: deploymentInfo.color }}>
+          📍 Deployment Information
+        </h3>
+        <div style={{ fontSize: "14px", color: "#ccc" }}>
+          <div><strong>Platform:</strong> {deploymentInfo.platform}</div>
+          <div><strong>Repository:</strong> MoBetta8/eve-console-unified</div>
+          <div><strong>URL:</strong> {window.location.href}</div>
+        </div>
+      </div>
+
       <p>Status: {status === "online" ? "✅ Online" : "❌ Offline"}</p>
       {status === "offline" ? (
         <div style={{ color: "red", marginTop: "20px" }}>
