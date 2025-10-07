@@ -21,12 +21,22 @@ export default async function handler(req, res) {
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://github.com/MoBetta8/eve-console-unified',
+        'X-Title': 'Eve Console'
       },
       body: JSON.stringify({
-        model: 'openai/gpt-3.5-turbo',
+        model: 'deepseek/deepseek-chat-v3.1:free',
         messages: [{ role: 'user', content: message }],
       }),
     });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return res.status(response.status).json({ 
+        error: 'OpenRouter API error', 
+        detail: errorText 
+      });
+    }
 
     const data = await response.json();
 

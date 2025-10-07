@@ -5,3 +5,12 @@ node_modules
 .next
 out
 build
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info
+dist/
